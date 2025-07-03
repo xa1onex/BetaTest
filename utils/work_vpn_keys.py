@@ -67,7 +67,7 @@ def resume_key(vpn_key: VPNKey) -> bool:
         # Добавление клиента в конфигурацию
         add_cmd = (
             f'echo {DEFAULT_SERVER_PASSWORD} | sudo -S sh -c '
-            f'"jq \'.inbounds[0].settings.clients += [{{"id": "{client_uuid}"}}]\' '
+            f'"jq \'.inbounds[0].settings.clients += [{{"id": "{client_uuid}", "flow": "xtls-rprx-vision"}}]\' '
             f'{XRAY_CONFIG_PATH} > {XRAY_CONFIG_PATH}.tmp && '
             f'mv {XRAY_CONFIG_PATH}.tmp {XRAY_CONFIG_PATH}"'
         )
