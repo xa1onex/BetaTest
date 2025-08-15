@@ -1,9 +1,0 @@
-peewee
-pyTelegramBotAPI
-python-dotenv
-requests
-paramiko
-pexpect
-cryptography
-qrcode[pil]
-APScheduler
