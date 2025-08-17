@@ -8,7 +8,7 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.fsm.state import StatesGroup, State
 from aiogram.fsm.context import FSMContext
 
-API_TOKEN = "7392209320:AAET1DAtfR64VmeYe186oWR_DsUwhAEWtms"
+API_TOKEN = "7749767956:AAEVcUFvqgprNSDZoj2DbAdPQaGFoNmoVdw"
 PROVIDER_TOKEN = ""  # Telegram Stars
 
 # ==================== Инициализация бота ====================
@@ -21,7 +21,8 @@ cursor = conn.cursor()
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS users (
     user_id INTEGER PRIMARY KEY,
-    balance INTEGER DEFAULT 100
+    balance INTEGER DEFAULT 100,
+    current_bet INTEGER DEFAULT 50
 )
 """)
 conn.commit()
@@ -43,13 +44,43 @@ def update_balance(user_id: int, diff: int):
     cursor.execute("UPDATE users SET balance=? WHERE user_id=?", (bal + diff, user_id))
     conn.commit()
 
+def get_bet(user_id: int) -> int:
+    cursor.execute("SELECT current_bet FROM users WHERE user_id=?", (user_id,))
+    row = cursor.fetchone()
+    if row:
+        return row[0]
+    return 50
+
+def set_bet(user_id: int, bet: int):
+    cursor.execute("UPDATE users SET current_bet=? WHERE user_id=?", (bet, user_id))
+    conn.commit()
+
+# ==================== Коэффициенты выигрыша ====================
+WIN_COEFFS = {
+    50: 100,     # x2
+    100: 230,    # ~x2.3
+    300: 750,    # ~x2.5
+    500: 1350,   # ~x2.7
+    1000: 3000   # x3
+}
+
 # ==================== Активные игры ====================
 active_games = {}  # user_id -> {type, bet, turn, results}
 
 # ==================== Меню ====================
 def main_menu(user_id: int):
     bal = get_balance(user_id)
+    bet = get_bet(user_id)
+    potential_win = WIN_COEFFS.get(bet, bet * 2)
+
+    bet_values = [50, 100, 300, 500, 1000]
+    bet_buttons = []
+    for v in bet_values:
+        text = f"{'✅ ' if v == bet else ''}{v}⭐"
+        bet_buttons.append(InlineKeyboardButton(text=text, callback_data=f"set_bet:{v}"))
+
     kb = InlineKeyboardMarkup(inline_keyboard=[
+        bet_buttons,
         [InlineKeyboardButton(text="🎲", callback_data="game:dice"),
          InlineKeyboardButton(text="🎰", callback_data="game:slots"),
          InlineKeyboardButton(text="🏀", callback_data="game:basket"),
@@ -59,14 +90,11 @@ def main_menu(user_id: int):
          InlineKeyboardButton(text="💵 Вывод средств", url="https://t.me/cloud_nnine")],
         [InlineKeyboardButton(text="💰 Пополнить баланс", callback_data="deposit")]
     ])
+
     text = (
         f"🎮 Игры на звёзды\n"
-        f"Сражайся с соперником 1 на 1!\n\n"
-        f"🎲 Кубик — от 1 до 6 (больше число побеждает)\n"
-        f"🎰 Слоты — 1-64 (64 = 777)\n"
-        f"🏀 Баскетбол — 1-3 (3 = попадание)\n"
-        f"⚽ Футбол — 1-5 (3 = гол)\n"
-        f"🎯 Дротик — 1-6 (6 = bullseye)\n\n"
+        f"Текущая ставка: <b>{bet}⭐</b>\n"
+        f"💎 Потенциальный выигрыш: <b>{potential_win}⭐</b>\n\n"
         f"💰 Баланс: <b>{bal}⭐</b>\n"
     )
     return text, kb
@@ -94,6 +122,15 @@ async def cmd_start(message: Message):
     add_user(message.from_user.id)
     text, kb = main_menu(message.from_user.id)
     await message.answer(text, reply_markup=kb)
+
+# ==================== Смена ставки ====================
+@dp.callback_query(F.data.startswith("set_bet:"))
+async def set_bet_handler(callback: CallbackQuery):
+    user_id = callback.from_user.id
+    new_bet = int(callback.data.split(":")[1])
+    set_bet(user_id, new_bet)
+    text, kb = main_menu(user_id)
+    await callback.message.edit_text(text, reply_markup=kb)
 
 # ==================== Помощь ====================
 @dp.callback_query(F.data == "help")
@@ -124,9 +161,9 @@ async def process_payment(callback: CallbackQuery, state: FSMContext):
         chat_id=callback.from_user.id,
         title=f"Пополнение баланса",
         description=f"Пополнение баланса на {amount_stars}⭐",
-        provider_token="",
+        provider_token=PROVIDER_TOKEN,
         currency="XTR",
-        prices=[LabeledPrice(label=f"Пополнение {amount_stars}⭐", amount=amount_stars * 1000)],  # *1000 для Stars
+        prices=[LabeledPrice(label=f"Пополнение {amount_stars}⭐", amount=amount_stars * 1000)],
         payload=payload,
         start_parameter=f'deposit_{callback.from_user.id}_{amount_stars}',
         need_name=False,
@@ -154,7 +191,7 @@ async def process_successful_payment(message: Message):
 async def choose_game(callback: CallbackQuery, from_retry: bool = False):
     user_id = callback.from_user.id
     game_type = callback.data.split(":")[1]
-    bet = 10
+    bet = get_bet(user_id)
     balance = get_balance(user_id)
 
     if balance < bet:
@@ -163,11 +200,9 @@ async def choose_game(callback: CallbackQuery, from_retry: bool = False):
 
     update_balance(user_id, -bet)
 
-    # сохраняем игру
     turn = random.choice(["user", "bot"])
     active_games[user_id] = {"type": game_type, "bet": bet, "turn": turn, "results": {}}
 
-    # имитация поиска соперника
     if not from_retry:
         await callback.message.answer("⏳ Ищем противника...")
         await asyncio.sleep(2)
@@ -185,8 +220,6 @@ async def choose_game(callback: CallbackQuery, from_retry: bool = False):
         active_games[user_id]["turn"] = "user"
         await bot.send_message(user_id, f"👉 Твой ход! Кидай {game_type} ({emoji_for(game_type)})")
 
-
-
 # ==================== Ходы ====================
 @dp.message(F.dice)
 async def handle_dice(message: Message):
@@ -198,33 +231,31 @@ async def handle_dice(message: Message):
     if game["turn"] != "user":
         return
 
-    # сохраняем результат игрока
     game["results"]["user"] = message.dice.value
 
-    # если бот ещё не ходил → ходит
     if "bot" not in game["results"]:
         await asyncio.sleep(2)
         bot_msg = await bot.send_dice(user_id, emoji=emoji_for(game["type"]))
         game["results"]["bot"] = bot_msg.dice.value
 
-    # подводим итоги
     await asyncio.sleep(1)
     await finish_game(user_id)
 
+# ==================== Итоги игры ====================
 async def finish_game(user_id: int):
     game = active_games[user_id]
     bet = game["bet"]
     res = game["results"]
-    bank = bet * 2
+    prize = WIN_COEFFS.get(bet, bet * 2)
 
     if res["user"] > res["bot"]:
-        update_balance(user_id, bank)
-        text = f"🏆 Ты выиграл! +{bet}⭐\n💰 Баланс: {get_balance(user_id)}⭐"
+        update_balance(user_id, prize)  # начисляем фиксированный выигрыш
+        text = f"🏆 Ты выиграл! +{prize}⭐\n💰 Баланс: {get_balance(user_id)}⭐"
     elif res["user"] < res["bot"]:
         text = f"💀 Ты проиграл! -{bet}⭐\n💰 Баланс: {get_balance(user_id)}⭐"
     else:
-        update_balance(user_id, bet)
-        text = "🤝 Ничья! Баланс без изменений."
+        update_balance(user_id, bet)  # возвращаем ставку
+        text = f"🤝 Ничья! Ставка {bet}⭐ возвращена.\n💰 Баланс: {get_balance(user_id)}⭐"
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🔁 Повторить", callback_data=f"retry:{game['type']}")],
@@ -238,13 +269,12 @@ async def finish_game(user_id: int):
 @dp.callback_query(F.data.startswith("retry:"))
 async def retry_game(callback: CallbackQuery):
     game_type = callback.data.split(":")[1]
-    # вызываем choose_game, но помечаем, что это повтор
     fake_callback = CallbackQuery(
         id=callback.id,
         from_user=callback.from_user,
         chat_instance=callback.chat_instance,
         data=f"game:{game_type}",
-        message=None  # теперь можно без message
+        message=None
     )
     await choose_game(fake_callback, from_retry=True)
 
